@@ -1,0 +1,24 @@
+# Virtual environment
+.venv/
+venv/
+
+# Database
+complaints.db
+
+# ChromaDB (too large)
+chroma_db/
+
+# Environment variables (never push API keys)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# PyCharm
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
