@@ -22,3 +22,6 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Policy PDFs (large binary files)
+data/*.pdf
