@@ -133,6 +133,6 @@ Password: admin123
 B.E. Information Technology — Vidyalankar Institute of Technology
 CGPA: 9.02
 
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue)](https://linkedin.com/in/https://www.linkedin.com/in/tejas-kunde/)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Connect-blue)](https://linkedin.com/in/https://https://www.linkedin.com/in/tejas-kunde/)
 [![GitHub](https://img.shields.io/badge/GitHub-Follow-black)](https://github.com/Tejass003)# ai-complaint-agent
 AI-powered e-commerce complaint resolution system using RAG + LLM that automatically reads company policies, makes refund/replace/escalate decisions and drafts personalised emails.
