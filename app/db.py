@@ -59,6 +59,7 @@ class Complaint(Base):
     # Email drafted
     email_subject    = Column(String, nullable=True)
     email_body       = Column(Text, nullable=True)
+    email_sent = Column(String, nullable=True)
 
     created_at       = Column(DateTime, default=datetime.utcnow)
 
@@ -111,6 +112,19 @@ def get_all_users() -> list:
 def save_complaint(complaint_data: dict, agent_result: dict, user_id: int = None) -> Complaint:
     db = SessionLocal()
 
+    # Safety check — if agent_result is None or missing fields
+    if not agent_result:
+        agent_result = {
+            "decision":         "ESCALATE",
+            "reason":           "System error during processing",
+            "confidence":       0.0,
+            "policy_reference": "N/A",
+            "email_subject":    "Your complaint has been received",
+            "email_body":       "Dear Customer, your complaint has been forwarded to our team.",
+            "email_sent":       False,
+            "email_status":     "Not sent due to error",
+        }
+
     customer_name  = None
     customer_email = None
     product_name   = None
@@ -125,18 +139,19 @@ def save_complaint(complaint_data: dict, agent_result: dict, user_id: int = None
 
     record = Complaint(
         submitted_by     = user_id,
-        complaint_text   = complaint_data["complaint"],
+        complaint_text   = complaint_data.get("complaint", ""),
         order_id         = complaint_data.get("order_id"),
         customer_name    = customer_name,
         customer_email   = customer_email,
         product_name     = product_name,
         company          = company,
-        decision         = agent_result["decision"],
-        reason           = agent_result["reason"],
-        confidence       = agent_result["confidence"],
-        policy_reference = agent_result.get("policy_reference"),
-        email_subject    = agent_result.get("email_subject"),
-        email_body       = agent_result.get("email_body"),
+        decision         = agent_result.get("decision", "ESCALATE"),
+        reason           = agent_result.get("reason", "Unknown"),
+        confidence       = agent_result.get("confidence", 0.0),
+        policy_reference = agent_result.get("policy_reference", "N/A"),
+        email_subject    = agent_result.get("email_subject", ""),
+        email_body       = agent_result.get("email_body", ""),
+        email_sent       = str(agent_result.get("email_sent", False)),
     )
 
     db.add(record)
@@ -146,7 +161,6 @@ def save_complaint(complaint_data: dict, agent_result: dict, user_id: int = None
 
     print(f"✅ Saved to database — ID: {record.id} | Decision: {record.decision}")
     return record
-
 
 def get_all_complaints() -> list:
     db = SessionLocal()

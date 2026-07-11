@@ -1,7 +1,7 @@
 """
 rag/query.py
-Tests if ChromaDB is returning correct policy chunks
-for a given question
+Query ChromaDB for relevant policy chunks.
+Can filter by company for accurate results.
 """
 
 import os
@@ -14,53 +14,74 @@ load_dotenv()
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
 COLLECTION_NAME    = "ecommerce_policies"
 
-# Load model and connect to ChromaDB
 model      = SentenceTransformer("all-MiniLM-L6-v2")
 client     = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
 collection = client.get_collection(COLLECTION_NAME)
 
+# Map company name to PDF source names
+COMPANY_SOURCES = {
+    "Amazon":   ["amazon_damaged", "amazon_refund_policy", "amazon_refund_status",
+                 "amazon_returns_policy", "amazon_returns_process"],
+    "Flipkart": ["flipkart_policy"],
+    "Meesho":   ["meesho_returns", "meesho_cancellation"],
+}
 
-def query_policy(question: str, n_results: int = 3):
+
+def query_policy(question: str, n_results: int = 3, company: str = None) -> dict:
     """
-    Takes a question
-    Returns top matching policy chunks
+    Semantic search over policy chunks.
+    If company is provided, only searches that company's policies.
     """
     print(f"\n🔍 Question: {question}")
+    if company:
+        print(f"   Company filter: {company}")
     print("-" * 60)
 
-    # Convert question to embedding
-    question_embedding = model.encode([question]).tolist()
+    query_embedding = model.encode([question]).tolist()
 
-    # Search ChromaDB
-    results = collection.query(
-        query_embeddings=question_embedding,
-        n_results=n_results,
-        include=["documents", "metadatas", "distances"]
-    )
+    # Build company filter if provided
+    where_filter = None
+    if company and company in COMPANY_SOURCES:
+        sources = COMPANY_SOURCES[company]
+        if len(sources) == 1:
+            where_filter = {"source": {"$eq": sources[0]}}
+        else:
+            where_filter = {"source": {"$in": sources}}
+
+    # Query ChromaDB
+    if where_filter:
+        results = collection.query(
+            query_embeddings = query_embedding,
+            n_results        = n_results,
+            where            = where_filter,
+            include          = ["documents", "metadatas", "distances"]
+        )
+    else:
+        results = collection.query(
+            query_embeddings = query_embedding,
+            n_results        = n_results,
+            include          = ["documents", "metadatas", "distances"]
+        )
 
     # Print results
     for i in range(len(results["documents"][0])):
-        doc      = results["documents"][0][i]
-        source   = results["metadatas"][0][i]["source"]
-        distance = results["distances"][0][i]
-        score    = round(1 - distance, 4)
-
+        doc    = results["documents"][0][i]
+        source = results["metadatas"][0][i]["source"]
+        score  = round(1 - results["distances"][0][i], 4)
         print(f"\n📄 Result {i+1}")
         print(f"   Source:    {source}")
         print(f"   Relevance: {score}")
-        print(f"   Text:      {doc[:300]}...")
+        print(f"   Text:      {doc[:200]}...")
 
     return results
 
 
-# ── Test queries ──────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("=" * 60)
-    print("RAG SYSTEM TEST")
-    print("=" * 60)
-
+    print("=== TEST WITHOUT FILTER ===")
     query_policy("can I return a damaged product?")
-    query_policy("how many days do I have to return electronics?")
-    query_policy("when will I get my refund after returning?")
-    query_policy("what happens if I receive wrong product?")
-    query_policy("can I cancel my order after it is shipped?")
+
+    print("\n=== TEST WITH AMAZON FILTER ===")
+    query_policy("can I return a damaged product?", company="Amazon")
+
+    print("\n=== TEST WITH FLIPKART FILTER ===")
+    query_policy("refund for defective electronics", company="Flipkart")

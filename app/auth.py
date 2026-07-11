@@ -65,21 +65,23 @@ def login(email: str, password: str):
 def create_default_admin():
     """
     Creates a default admin account if none exists.
-    Used on first run.
+    Safe to call multiple times — won't duplicate.
     """
-    existing = get_user_by_email("admin@complaints.com")
-    if not existing:
-        user, error = signup(
-            name     = "Admin",
-            email    = "admin@complaints.com",
-            password = "admin123",
-            role     = "admin"
-        )
-        if user:
-            print("✅ Default admin created")
-            print("   Email:    admin@complaints.com")
-            print("   Password: admin123")
-    else:
-        print("✅ Admin account exists")
-
+    try:
+        existing = get_user_by_email("admin@complaints.com")
+        if not existing:
+            user, error = signup(
+                name     = "Admin",
+                email    = "admin@complaints.com",
+                password = "admin123",
+                role     = "admin"
+            )
+            if user:
+                print("✅ Default admin created")
+                print("   Email:    admin@complaints.com")
+                print("   Password: admin123")
+        else:
+            print("✅ Admin account exists")
+    except Exception as e:
+        print(f"Admin setup skipped: {e}")
 

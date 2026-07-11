@@ -1,25 +1,35 @@
 """
 app/agent.py
-The AI brain of the complaint resolution system.
+AI brain with multilingual support.
 
 Flow:
-1. Receive complaint + order_id
-2. Query RAG for relevant policy chunks
-3. Look up order from orders.json
-4. Send everything to Groq LLM
-5. Get structured decision back
+1. Detect language of complaint
+2. Translate to English if needed
+3. Query RAG for relevant policy
+4. Look up order
+5. Send to Groq LLM for decision
+6. Translate email back to customer's language
+7. Send email to customer
 """
 
 import os
+import re
 import json
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 from rag.query import query_policy
+from app.translator import (
+    detect_language,
+    translate_to_english,
+    translate_email,
+    get_language_name
+)
 
 load_dotenv()
 
-# ── Load orders from JSON ─────────────────────────────────────────────
+
+# ── Load orders ───────────────────────────────────────────────────────
 def load_orders() -> list:
     orders_path = os.path.join("data", "orders.json")
     with open(orders_path, "r") as f:
@@ -34,7 +44,7 @@ def get_order_by_id(order_id: str) -> dict:
     return None
 
 
-# ── Load Groq LLM ─────────────────────────────────────────────────────
+# ── LLM ───────────────────────────────────────────────────────────────
 def get_llm():
     return ChatGroq(
         model="llama-3.3-70b-versatile",
@@ -44,10 +54,10 @@ def get_llm():
     )
 
 
-# ── Main decision prompt ──────────────────────────────────────────────
+# ── Prompt ────────────────────────────────────────────────────────────
 DECISION_PROMPT = PromptTemplate.from_template("""
 You are an expert e-commerce customer support agent for an Indian e-commerce platform.
-Your job is to resolve customer complaints fairly based on company policy.
+Resolve customer complaints fairly based on company policy.
 
 CUSTOMER COMPLAINT:
 {complaint}
@@ -58,127 +68,194 @@ ORDER DETAILS:
 RELEVANT POLICY SECTIONS:
 {policy_chunks}
 
-Based on the complaint, order details, and policy sections above, make a decision.
+DECISION RULES:
+1. Product damaged or defective + delivered within 10 days = REPLACE
+2. Customer wants refund + delivered within 10 days = REFUND
+3. Order value above Rs 50000 = ESCALATE
+4. Product not delivered yet = ESCALATE
+5. Beyond 30 days since delivery = ESCALATE
+6. Order not found = ESCALATE
+7. Complaint unclear = ESCALATE
 
-Rules:
-- If product is damaged or defective and within return window → REPLACE
-- If customer wants refund and is within return window → REFUND  
-- If order value is above Rs 50000 → ESCALATE to senior team
-- If complaint is unclear or policy does not cover the situation → ESCALATE
-- If beyond return window → ESCALATE
-- If order not found → ESCALATE
+IMPORTANT: You MUST return ONLY a JSON object. No explanation before or after.
+No markdown. No code blocks. Just the raw JSON object starting with {{ and ending with }}.
 
-You MUST respond in this exact JSON format only, nothing else:
 {{
-  "decision": "REFUND" or "REPLACE" or "ESCALATE",
-  "reason": "clear explanation of why this decision was made based on policy",
-  "confidence": 0.0 to 1.0,
-  "policy_reference": "which policy section supports this decision",
-  "email_subject": "subject line for customer email",
-  "email_body": "full polite professional email to customer in English explaining the decision and next steps"
+  "decision": "REPLACE",
+  "reason": "explain why based on policy and order details",
+  "confidence": 0.85,
+  "policy_reference": "policy section used",
+  "email_subject": "short email subject",
+  "email_body": "full professional email to customer with next steps"
 }}
+
+Replace the values above with your actual decision. Return ONLY the JSON.
 """)
 
 
-# ── Resolve a complaint ───────────────────────────────────────────────
+# ── Main resolve function ─────────────────────────────────────────────
 def resolve_complaint(complaint: str, order_id: str = None) -> dict:
     """
-    Main function that resolves a complaint.
-    Returns structured decision dict.
+    Resolves a complaint in any language.
+    Returns structured decision with email in customer's language.
     """
-
     print(f"\n{'='*60}")
     print(f"Processing complaint...")
-    print(f"Complaint: {complaint[:100]}...")
 
-    # Step 1 — Get order details
+    # Step 1 — Detect language
+    lang_code = detect_language(complaint)
+    lang_name = get_language_name(lang_code)
+    print(f"🌐 Language detected: {lang_name} ({lang_code})")
+
+    # Step 2 — Translate to English for RAG
+    if lang_code != "en":
+        complaint_english = translate_to_english(complaint, lang_code)
+        print(f"🔄 Translated: {complaint_english[:100]}...")
+    else:
+        complaint_english = complaint
+
+    # Step 3 — Get order details
     order_details = "No order ID provided."
+    order = None
     if order_id:
         order = get_order_by_id(order_id)
         if order:
             order_details = f"""
-Order ID:         {order['order_id']}
-Customer:         {order['customer_name']}
-Product:          {order['product_name']}
-Category:         {order['category']}
-Order Value:      Rs {order['order_value']}
-Company:          {order['company']}
-Is Delivered:     {order['is_delivered']}
-Days Since Delivery: {order['days_since_delivery']}
-Payment Method:   {order['payment_method']}
+Order ID:             {order['order_id']}
+Customer:             {order['customer_name']}
+Product:              {order['product_name']}
+Category:             {order['category']}
+Order Value:          Rs {order['order_value']}
+Company:              {order['company']}
+Is Delivered:         {order['is_delivered']}
+Days Since Delivery:  {order['days_since_delivery']}
+Payment Method:       {order['payment_method']}
 """
             print(f"✅ Order found: {order['product_name']}")
         else:
-            order_details = f"Order ID {order_id} not found in system."
-            print(f"❌ Order {order_id} not found")
+            order_details = f"Order {order_id} not found."
+            print(f"❌ Order not found")
 
-    # Step 2 — Query RAG for relevant policy
-    print(f"🔍 Querying policy database...")
-    rag_results = query_policy(complaint, n_results=3)
+    # Step 4 — RAG query
+        # Step 4 — RAG query filtered by company
+        print(f"🔍 Querying policy database...")
 
-    policy_chunks = ""
-    for i, (doc, meta) in enumerate(zip(
-        rag_results["documents"][0],
-        rag_results["metadatas"][0]
-    )):
-        policy_chunks += f"\n[Policy {i+1} from {meta['source']}]\n{doc}\n"
+        # Get company from order if available
+        order_company = None
+        if order and order.get("company"):
+            order_company = order["company"]
+            print(f"   Filtering by company: {order_company}")
 
-    # Step 3 — Build prompt and call LLM
+        rag_results = query_policy(complaint_english, n_results=3, company=order_company)
+        policy_chunks = ""
+        for i, (doc, meta) in enumerate(zip(
+                rag_results["documents"][0],
+                rag_results["metadatas"][0]
+        )):
+            policy_chunks += f"\n[Policy {i + 1} from {meta['source']}]\n{doc}\n"
+    # Step 5 — Call LLM
     print(f"🤖 Calling Groq LLM...")
     llm    = get_llm()
     prompt = DECISION_PROMPT.format(
-        complaint     = complaint,
+        complaint     = complaint_english,
         order_details = order_details,
         policy_chunks = policy_chunks,
     )
 
     response = llm.invoke(prompt)
     raw      = response.content.strip()
+    print(f"🔍 Raw LLM response: {raw[:300]}")
 
-    # Step 4 — Parse JSON response
+    # Step 6 — Parse JSON response
     try:
-        # Clean up response if LLM adds extra text
         if "```json" in raw:
             raw = raw.split("```json")[1].split("```")[0].strip()
         elif "```" in raw:
             raw = raw.split("```")[1].split("```")[0].strip()
 
-        result = json.loads(raw)
-        print(f"✅ Decision: {result['decision']} (confidence: {result['confidence']})")
-        return result
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if json_match:
+            raw = json_match.group()
 
-    except json.JSONDecodeError:
-        print(f"⚠️  Could not parse LLM response, escalating")
-        return {
+        result = json.loads(raw)
+
+        if "decision" not in result:
+            raise ValueError("No decision in response")
+        if result["decision"] not in ["REFUND", "REPLACE", "ESCALATE"]:
+            result["decision"] = "ESCALATE"
+
+    except Exception as e:
+        print(f"⚠️ Parse error: {e}")
+        result = {
             "decision":         "ESCALATE",
-            "reason":           "System could not process complaint automatically",
+            "reason":           "System could not process automatically. Escalating to human agent.",
             "confidence":       0.0,
             "policy_reference": "N/A",
             "email_subject":    "Your complaint has been received",
-            "email_body":       f"Dear Customer,\n\nThank you for reaching out. Your complaint has been forwarded to our senior support team who will contact you within 24 hours.\n\nOrder ID: {order_id}\n\nRegards,\nSupport Team"
+            "email_body":       f"Dear Customer,\n\nThank you for contacting us. Your complaint has been forwarded to our senior support team who will contact you within 24 hours.\n\nOrder ID: {order_id or 'N/A'}\n\nRegards,\nSupport Team",
         }
 
+    # Step 7 — Translate email back to customer's language
+    # THIS IS OUTSIDE THE TRY/EXCEPT — always runs
+    if lang_code != "en":
+        print(f"🔄 Translating email back to {lang_name}...")
+        result["email_body"]    = translate_email(result.get("email_body", ""), lang_code)
+        result["email_subject"] = translate_email(result.get("email_subject", ""), lang_code)
 
-# ── Test it ───────────────────────────────────────────────────────────
+    # Step 8 — Add language info
+    result["language_detected"]  = lang_code
+    result["language_name"]      = lang_name
+    result["original_complaint"] = complaint
+    result["english_complaint"]  = complaint_english
+
+    # Step 9 — Send email to customer
+    result["email_sent"]   = False
+    result["email_status"] = "No customer email found"
+
+    if order and order.get("customer_email"):
+        from app.email_sender import send_email
+        email_result = send_email(
+            to_email      = order["customer_email"],
+            subject       = result.get("email_subject", "Update on your complaint"),
+            body          = result.get("email_body", ""),
+            customer_name = order.get("customer_name", "Customer")
+        )
+        result["email_sent"]   = email_result["success"]
+        result["email_status"] = email_result["message"]
+
+    print(f"✅ Final Decision: {result['decision']} (confidence: {result.get('confidence', 0)})")
+    return result
+
+
+# ── Test ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
 
-    print("TEST 1 — Damaged product")
+    print("TEST 1 — Hindi complaint")
     result = resolve_complaint(
-        complaint="I received my boAt Airdopes and one earbud is not working at all. It is clearly defective. I want a replacement.",
-        order_id="ORD-1003"
+        complaint="मुझे मेरा Apple iPhone 14 मिला लेकिन स्क्रीन टूटी हुई है। मुझे replacement चाहिए।",
+        order_id="ORD-6643"
     )
-    print(json.dumps(result, indent=2))
+    if result:
+        print(f"Decision:   {result.get('decision')}")
+        print(f"Language:   {result.get('language_name')}")
+        print(f"Confidence: {result.get('confidence')}")
 
-    print("\nTEST 2 — Refund request")
+    print("\nTEST 2 — Tamil complaint")
     result = resolve_complaint(
-        complaint="The jeans I ordered are of very poor quality. I am not happy. I want my money back.",
-        order_id="ORD-1002"
+        complaint="என் தயாரிப்பு சேதமடைந்தது. எனக்கு பணம் திரும்ப வேண்டும்.",
+        order_id="ORD-7911"
     )
-    print(json.dumps(result, indent=2))
+    if result:
+        print(f"Decision:   {result.get('decision')}")
+        print(f"Language:   {result.get('language_name')}")
+        print(f"Confidence: {result.get('confidence')}")
 
-    print("\nTEST 3 — High value order")
+    print("\nTEST 3 — English complaint")
     result = resolve_complaint(
-        complaint="My HP Laptop stopped working after 2 days. This is unacceptable for a Rs 54990 product.",
-        order_id="ORD-1007"
+        complaint="My ceiling fan stopped working after 2 days. Not acceptable.",
+        order_id="ORD-5319"
     )
-    print(json.dumps(result, indent=2))
+    if result:
+        print(f"Decision:   {result.get('decision')}")
+        print(f"Language:   {result.get('language_name')}")
+        print(f"Confidence: {result.get('confidence')}")
